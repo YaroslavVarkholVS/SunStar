@@ -8,6 +8,11 @@ dependencies = [
     "email-validator",
     "sqlmodel",
     "httpx",
+    "langchain",
+    "langchain-openai",
+    "langgraph",
+    "tavily",
+    "python-dotenv>=1.2.2",
 ]
 
 [dependency-groups]

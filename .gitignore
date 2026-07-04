@@ -13,6 +13,9 @@ __pycache__/
 *.db
 *.sqlite3
 
+# Secrets
+.env
+
 # IDE
 .idea/
 
