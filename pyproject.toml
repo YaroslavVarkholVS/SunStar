@@ -1,0 +1,22 @@
+
+[project]
+name = "sunstar"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]",
+    "email-validator",
+    "sqlmodel",
+    "httpx",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.fastapi]
+entrypoint = "backend.main:app"

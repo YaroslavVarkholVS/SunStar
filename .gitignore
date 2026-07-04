@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# uv / venv
+.venv/
+
+# Test / cache
+.pytest_cache/
+
+# Database
+*.db
+*.sqlite3
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
