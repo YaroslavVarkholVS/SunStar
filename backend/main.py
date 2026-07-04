@@ -1,29 +1,24 @@
+import json
+import logging
 from typing import Any
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from sqlmodel import SQLModel, create_engine
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.tools import tool
-from langchain.agents import create_agent
-from langgraph.checkpoint.memory import InMemorySaver
-from tavily import TavilyClient
-from langchain.messages import HumanMessage
 import openai
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from langchain.agents import create_agent
+from langchain.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from tavily import TavilyClient
 
-engine = create_engine("sqlite:///database.db")
-
-
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
-
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -43,17 +38,8 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def on_startup():
-    create_db_and_tables()
-
-
 class RecipeSearchRequest(BaseModel):
     ingredients: str
-
-
-class RecipeSearchResponse(BaseModel):
-    recipes: list[str]
 
 
 @tool
@@ -62,42 +48,53 @@ def web_search(query: str) -> dict[str, Any]:
     return TavilyClient().search(query)
 
 
-system_prompt = """You are a helpful assistant that can search for recipes based on ingredients.
-You will be given a list of ingredients, and you should return a list of recipes that can be made with those ingredients. 
-You should use the web_search tool to find recipes online.
-"""
-config = {"configurable": {"thread_id": "1"}}
+system_prompt = """You are a recipe search assistant. 
+Find recipes based on provided ingredients using the web_search tool ONLY ONCE per query.
+Return ONLY a bullet-point list of recipe names and very brief, ultra-concise steps.
+Do not include links, introductions, or conclusions. Be brief to save tokens."""
 
-agent = create_agent(model="gpt-5-nano",
-                     tools=[web_search],
-                     system_prompt=system_prompt,
-                     checkpointer=InMemorySaver()
-                     )
 
-@app.post("/api/recipes/search", response_model=RecipeSearchResponse)
-async def search_recipes(payload: RecipeSearchRequest) -> RecipeSearchResponse:
+llm = ChatOpenAI(
+    model="gpt-5-nano",
+    # Minimize money flow
+    temperature=0.0,
+    max_tokens=150,
+    verbosity="low",
+    reasoning_effort="minimal"
+)
+
+agent = create_agent(
+    model=llm,
+    tools=[web_search],
+    system_prompt=system_prompt,
+)
+
+
+async def stream_recipe_tokens(ingredients: str):
     try:
-        response = await agent.ainvoke({"messages": [HumanMessage(content=payload.ingredients)]}, config)
-    except openai.RateLimitError:
-        raise HTTPException(
-            status_code=429,
-            detail="The recipe assistant is temporarily unavailable because the OpenAI quota has been exceeded. Please try again later.",
-        )
-    except openai.AuthenticationError:
-        raise HTTPException(
-            status_code=502,
-            detail="The recipe assistant is misconfigured (invalid OpenAI credentials). Please contact support.",
-        )
+        async for message_chunk, _metadata in agent.astream(
+            {"messages": [HumanMessage(content=ingredients)]},
+            stream_mode="messages",
+        ):
+            if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
+                yield json.dumps({"type": "token", "content": message_chunk.content}) + "\n"
     except openai.APIStatusError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"The recipe assistant failed to respond: {e.message}",
-        )
-    recipes = response["text"]
+        yield json.dumps({"type": "error", "detail": f"The recipe assistant failed to respond: {e.message}"}) + "\n"
+        return
+    except openai.APIConnectionError:
+        yield json.dumps({"type": "error", "detail": "The recipe assistant is temporarily unavailable. Please try again later."}) + "\n"
+        return
+    except Exception:
+        logger.exception("Unhandled error while streaming recipe search")
+        yield json.dumps({"type": "error", "detail": "Something went wrong. Please try again later."}) + "\n"
+        return
 
-    return RecipeSearchResponse(recipes=[recipe.strip() for recipe in recipes.split("\n") if recipe.strip()])
+    yield json.dumps({"type": "done"}) + "\n"
 
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
+@app.post("/api/recipes/search")
+async def search_recipes(payload: RecipeSearchRequest) -> StreamingResponse:
+    return StreamingResponse(stream_recipe_tokens(payload.ingredients), media_type="application/x-ndjson")
 
+
+app.frontend("/", directory="frontend/dist", fallback="index.html", check_dir=False)
