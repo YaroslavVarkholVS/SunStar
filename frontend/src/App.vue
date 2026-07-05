@@ -1,74 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { onUnmounted } from 'vue'
+import { useRecipeSearch } from './composables/useRecipeSearch'
 
-type StreamEvent =
-  | { type: 'token'; content: string }
-  | { type: 'done' }
-  | { type: 'error'; detail: string }
+const { ingredients, recipes, isSearching, errorMessage, searchRecipes, cancelSearch } = useRecipeSearch()
 
-const ingredients = ref('')
-const rawText = ref('')
-const isSearching = ref(false)
-const errorMessage = ref('')
-
-const recipes = computed(() =>
-  rawText.value
-    .split('\n')
-    .map((recipe) => recipe.trim())
-    .filter(Boolean),
-)
-
-async function searchRecipes() {
-  if (!ingredients.value.trim() || isSearching.value) return
-
-  isSearching.value = true
-  errorMessage.value = ''
-  rawText.value = ''
-
-  try {
-    const response = await fetch('/api/recipes/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ingredients: ingredients.value }),
-    })
-
-    if (!response.ok || !response.body) {
-      const body = await response.json().catch(() => null)
-      throw new Error(body?.detail || `Search failed with status ${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-
-      let newlineIndex
-      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, newlineIndex)
-        buffer = buffer.slice(newlineIndex + 1)
-        if (!line.trim()) continue
-
-        const event: StreamEvent = JSON.parse(line)
-        if (event.type === 'token') {
-          rawText.value += event.content
-        } else if (event.type === 'error') {
-          throw new Error(event.detail)
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Error searching recipes:', error)
-    errorMessage.value =
-      error instanceof Error ? error.message : 'Something went wrong while searching. Please try again.'
-    rawText.value = ''
-  } finally {
-    isSearching.value = false
-  }
-}
+onUnmounted(cancelSearch)
 </script>
 
 <template>
