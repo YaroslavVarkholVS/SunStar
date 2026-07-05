@@ -9,13 +9,16 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from tavily import TavilyClient
+from backend.recipe_store import RecipeStoreError, search_recipes
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a recipe search assistant.
-Find recipes based on provided ingredients using the web_search tool ONLY ONCE per query.
-Return ONLY a bullet-point list of recipe names and very brief, ultra-concise steps.
-Do not include links, introductions, or conclusions. Be brief to save tokens."""
+First call search_saved_recipes ONCE to look for recipes the user has already saved that match the ingredients.
+If it returns relevant matches, base your answer on those and do NOT call web_search.
+Only call web_search, and ONLY ONCE, if search_saved_recipes has no relevant matches.
+Return ONLY a bullet-point list of recipe names and very brief, ultra-concise steps + links to the recipes if available.
+Do not include introductions, or conclusions. Be brief to save tokens."""
 
 _tavily_client = TavilyClient()
 
@@ -24,6 +27,20 @@ _tavily_client = TavilyClient()
 def web_search(query: str) -> dict[str, Any]:
     """Search the web for the given query and return matching results."""
     return _tavily_client.search(query)
+
+
+@tool
+def search_saved_recipes(query: str) -> list[dict[str, Any]]:
+    """Search the user's saved recipes for the given query.
+
+    Returns a list of genuine matches, each with a recipe name and its full
+    text. Returns an empty list if nothing is saved, nothing is a close
+    enough match, or the search is temporarily unavailable.
+    """
+    try:
+        return search_recipes(query)
+    except RecipeStoreError:
+        return []
 
 
 llm = ChatOpenAI(
@@ -37,7 +54,7 @@ llm = ChatOpenAI(
 
 agent = create_agent(
     model=llm,
-    tools=[web_search],
+    tools=[search_saved_recipes, web_search],
     system_prompt=SYSTEM_PROMPT,
 )
 
