@@ -10,6 +10,7 @@ dependencies = [
     "httpx",
     "langchain",
     "langchain-openai",
+    "langchain-chroma",
     "langgraph",
     "tavily",
     "python-dotenv>=1.2.2",

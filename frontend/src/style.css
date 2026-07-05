@@ -107,3 +107,59 @@ h1 {
   margin-top: 32px;
   opacity: 0.7;
 }
+
+.save-section {
+  margin-top: 56px;
+  padding-top: 40px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.save-section h2 {
+  color: var(--text-h);
+  font-size: 24px;
+  margin: 0 0 8px;
+}
+
+.save-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.save-form input,
+.save-form textarea {
+  padding: 12px 16px;
+  font-size: 16px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-h);
+  background: transparent;
+  resize: vertical;
+}
+
+.save-form button {
+  align-self: flex-start;
+  padding: 12px 20px;
+  font-size: 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.save-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.save-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.success {
+  color: #16a34a;
+  margin-top: 24px;
+}
