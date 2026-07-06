@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onUnmounted } from 'vue'
 import { useRecipeSearch } from './composables/useRecipeSearch'
+import SaveRecipeForm from './components/SaveRecipeForm.vue'
 
 const { ingredients, recipes, isSearching, errorMessage, searchRecipes, cancelSearch } = useRecipeSearch()
 
@@ -32,5 +33,7 @@ onUnmounted(cancelSearch)
     <p v-else-if="!isSearching && !errorMessage" class="empty-state">
       No recipes yet — try searching for some ingredients.
     </p>
+
+    <SaveRecipeForm />
   </main>
 </template>
