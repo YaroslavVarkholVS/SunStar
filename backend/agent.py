@@ -1,22 +1,21 @@
 import json
 import logging
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import openai
-from langchain.agents import create_agent
-from langchain.messages import HumanMessage
-from langchain_core.messages import AIMessageChunk
-from langchain_core.tools import tool
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
 from tavily import TavilyClient
 from backend.recipe_store import RecipeStoreError, search_recipes
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a recipe search assistant.
-First call search_saved_recipes ONCE to look for recipes the user has already saved that match the ingredients.
-If it returns relevant matches, base your answer on those and do NOT call web_search.
-Only call web_search, and ONLY ONCE, if search_saved_recipes has no relevant matches.
+SAVED_RESULT_SYSTEM_PROMPT = """You are a recipe search assistant. Below are recipes the user has already saved that match their ingredients.
+Return ONLY a bullet-point list of recipe names and very brief, ultra-concise steps + links to the recipes if available.
+Do not include introductions, or conclusions. Be brief to save tokens."""
+
+WEB_RESULT_SYSTEM_PROMPT = """You are a recipe search assistant. Below are web search results for the user's ingredients.
 Return ONLY a bullet-point list of recipe names and very brief, ultra-concise steps + links to the recipes if available.
 Do not include introductions, or conclusions. Be brief to save tokens."""
 
@@ -32,63 +31,53 @@ llm = ChatOpenAI(
 )
 
 
-@tool
-def _web_search_tool(query: str) -> dict[str, Any]:
-    """Search the web for the given query and return matching results."""
-    return _tavily_client.search(query)
+class RecipeSearchState(TypedDict, total=False):
+    ingredients: str
+    saved_matches: list[dict[str, Any]]
+    web_results: dict[str, Any]
+    answer: str
 
 
-@tool
-def _search_saved_recipes_tool(query: str) -> list[dict[str, Any]]:
-    """Search the user's saved recipes for the given query.
-
-    Returns a list of genuine matches, each with a recipe name and its full
-    text. Returns an empty list if nothing is saved, nothing is a close
-    enough match, or the search is temporarily unavailable.
-    """
+def _search_saved_node(state: RecipeSearchState) -> dict[str, Any]:
     try:
-        return search_recipes(query)
+        matches = search_recipes(state["ingredients"])
     except RecipeStoreError:
-        return []
+        matches = []
+    return {"saved_matches": matches}
 
 
-web_search_subagent = create_agent(
-    model=llm,
-    tools=[_web_search_tool],
-    system_prompt="Call _web_search_tool ONCE with the given query and return its results verbatim. Do not add commentary.",
-)
-
-saved_recipes_subagent = create_agent(
-    model=llm,
-    tools=[_search_saved_recipes_tool],
-    system_prompt="Call _search_saved_recipes_tool ONCE with the given query and return its results verbatim. Do not add commentary.",
-)
+def _route_after_saved(state: RecipeSearchState) -> Literal["respond", "web_search"]:
+    return "respond" if state.get("saved_matches") else "web_search"
 
 
-@tool
-def web_search(query: str) -> str:
-    """Search the web for the given query and return matching results."""
-    result = web_search_subagent.invoke({"messages": [HumanMessage(content=query)]})
-    return result["messages"][-1].content
+def _web_search_node(state: RecipeSearchState) -> dict[str, Any]:
+    return {"web_results": _tavily_client.search(state["ingredients"])}
 
 
-@tool
-def search_saved_recipes(query: str) -> str:
-    """Search the user's saved recipes for the given query.
+def _respond_node(state: RecipeSearchState) -> dict[str, Any]:
+    if state.get("saved_matches"):
+        system_prompt, data = SAVED_RESULT_SYSTEM_PROMPT, state["saved_matches"]
+    else:
+        system_prompt, data = WEB_RESULT_SYSTEM_PROMPT, state.get("web_results", {})
 
-    Returns genuine matches, each with a recipe name and its full text.
-    Returns nothing if no recipes are saved, nothing is a close enough
-    match, or the search is temporarily unavailable.
-    """
-    result = saved_recipes_subagent.invoke({"messages": [HumanMessage(content=query)]})
-    return result["messages"][-1].content
+    response = llm.invoke(
+        [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Ingredients: {state['ingredients']}\n\nResults:\n{json.dumps(data)}"),
+        ]
+    )
+    return {"answer": response.content}
 
 
-agent = create_agent(
-    model=llm,
-    tools=[search_saved_recipes, web_search],
-    system_prompt=SYSTEM_PROMPT,
-)
+_graph = StateGraph(RecipeSearchState)
+_graph.add_node("search_saved", _search_saved_node)
+_graph.add_node("web_search", _web_search_node)
+_graph.add_node("respond", _respond_node)
+_graph.add_edge(START, "search_saved")
+_graph.add_conditional_edges("search_saved", _route_after_saved)
+_graph.add_edge("web_search", "respond")
+_graph.add_edge("respond", END)
+recipe_graph = _graph.compile()
 
 
 def _event(**fields: Any) -> str:
@@ -97,9 +86,10 @@ def _event(**fields: Any) -> str:
 
 async def stream_recipe_tokens(ingredients: str):
     try:
-        async for message_chunk, _metadata in agent.astream(
-            {"messages": [HumanMessage(content=ingredients)]},
+        async for message_chunk, _metadata in recipe_graph.astream(
+            {"ingredients": ingredients},
             stream_mode="messages",
+            config={"run_name": "recipe_search", "tags": ["recipe-search"]},
         ):
             if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
                 yield _event(type="token", content=message_chunk.content)
