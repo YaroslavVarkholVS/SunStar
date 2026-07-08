@@ -12,6 +12,7 @@ dependencies = [
     "langchain-openai",
     "langchain-chroma",
     "langgraph",
+    "langsmith[claude-agent-sdk]",
     "tavily",
     "python-dotenv>=1.2.2",
 ]

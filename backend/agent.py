@@ -22,15 +22,24 @@ Do not include introductions, or conclusions. Be brief to save tokens."""
 
 _tavily_client = TavilyClient()
 
+llm = ChatOpenAI(
+    model="gpt-5-nano",
+    # Minimize money flow
+    temperature=0.0,
+    max_tokens=150,
+    verbosity="low",
+    reasoning_effort="minimal",
+)
+
 
 @tool
-def web_search(query: str) -> dict[str, Any]:
+def _web_search_tool(query: str) -> dict[str, Any]:
     """Search the web for the given query and return matching results."""
     return _tavily_client.search(query)
 
 
 @tool
-def search_saved_recipes(query: str) -> list[dict[str, Any]]:
+def _search_saved_recipes_tool(query: str) -> list[dict[str, Any]]:
     """Search the user's saved recipes for the given query.
 
     Returns a list of genuine matches, each with a recipe name and its full
@@ -43,14 +52,37 @@ def search_saved_recipes(query: str) -> list[dict[str, Any]]:
         return []
 
 
-llm = ChatOpenAI(
-    model="gpt-5-nano",
-    # Minimize money flow
-    temperature=0.0,
-    max_tokens=150,
-    verbosity="low",
-    reasoning_effort="minimal",
+web_search_subagent = create_agent(
+    model=llm,
+    tools=[_web_search_tool],
+    system_prompt="Call _web_search_tool ONCE with the given query and return its results verbatim. Do not add commentary.",
 )
+
+saved_recipes_subagent = create_agent(
+    model=llm,
+    tools=[_search_saved_recipes_tool],
+    system_prompt="Call _search_saved_recipes_tool ONCE with the given query and return its results verbatim. Do not add commentary.",
+)
+
+
+@tool
+def web_search(query: str) -> str:
+    """Search the web for the given query and return matching results."""
+    result = web_search_subagent.invoke({"messages": [HumanMessage(content=query)]})
+    return result["messages"][-1].content
+
+
+@tool
+def search_saved_recipes(query: str) -> str:
+    """Search the user's saved recipes for the given query.
+
+    Returns genuine matches, each with a recipe name and its full text.
+    Returns nothing if no recipes are saved, nothing is a close enough
+    match, or the search is temporarily unavailable.
+    """
+    result = saved_recipes_subagent.invoke({"messages": [HumanMessage(content=query)]})
+    return result["messages"][-1].content
+
 
 agent = create_agent(
     model=llm,
