@@ -4,6 +4,7 @@ from typing import Any, Literal, TypedDict
 
 import openai
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from tavily import TavilyClient
@@ -21,6 +22,23 @@ Do not include introductions, or conclusions. Be brief to save tokens."""
 
 _tavily_client = TavilyClient()
 
+RECIPE_MCP_CONFIG = {
+    "recipe-store": {
+        "command": "uv",
+        "args": ["run", "--directory", "/Users/yaroslavvarkhol/Projects/SunStarMCP", "main.py"],
+        "transport": "stdio",
+    }
+}
+_mcp_client = MultiServerMCPClient(RECIPE_MCP_CONFIG)
+_search_recipes_tool = None
+
+async def _get_search_tool():
+    global _search_recipes_tool
+    if _search_recipes_tool is None:
+        tools = await _mcp_client.get_tools()
+        _search_recipes_tool = next(t for t in tools if t.name == "search_recipes")
+    return _search_recipes_tool
+
 llm = ChatOpenAI(
     model="gpt-5-nano",
     # Minimize money flow
@@ -33,9 +51,28 @@ llm = ChatOpenAI(
 
 class RecipeSearchState(TypedDict, total=False):
     ingredients: str
+    mcp_matches: list[dict[str, Any]]
     saved_matches: list[dict[str, Any]]
     web_results: dict[str, Any]
     answer: str
+
+
+async def _search_mcp_node(state: RecipeSearchState) -> dict[str, Any]:
+    try:
+        tool = await _get_search_tool()
+        raw_results = await tool.ainvoke({"query": state["ingredients"], "limit": 5})
+    except Exception:
+        logger.exception("MCP recipe search failed")
+        return {"mcp_matches": []}
+
+    parsed_matches = []
+    for item in raw_results:
+        if isinstance(item, dict) and "text" in item:
+            parsed_matches.append(json.loads(item["text"]))
+        else:
+            parsed_matches.append(item)  # already-parsed fallback, just in case
+
+    return {"mcp_matches": parsed_matches}
 
 
 def _search_saved_node(state: RecipeSearchState) -> dict[str, Any]:
@@ -46,8 +83,12 @@ def _search_saved_node(state: RecipeSearchState) -> dict[str, Any]:
     return {"saved_matches": matches}
 
 
-def _route_after_saved(state: RecipeSearchState) -> Literal["respond", "web_search"]:
-    return "respond" if state.get("saved_matches") else "web_search"
+def _join_search_results(_state: RecipeSearchState) -> dict[str, Any]:
+    return {}
+
+
+def _route_after_search(state: RecipeSearchState) -> Literal["respond", "web_search"]:
+    return "respond" if state.get("mcp_matches") or state.get("saved_matches") else "web_search"
 
 
 def _web_search_node(state: RecipeSearchState) -> dict[str, Any]:
@@ -55,8 +96,9 @@ def _web_search_node(state: RecipeSearchState) -> dict[str, Any]:
 
 
 def _respond_node(state: RecipeSearchState) -> dict[str, Any]:
-    if state.get("saved_matches"):
-        system_prompt, data = SAVED_RESULT_SYSTEM_PROMPT, state["saved_matches"]
+    combined_matches = (state.get("saved_matches") or []) + (state.get("mcp_matches") or [])
+    if combined_matches:
+        system_prompt, data = SAVED_RESULT_SYSTEM_PROMPT, combined_matches
     else:
         system_prompt, data = WEB_RESULT_SYSTEM_PROMPT, state.get("web_results", {})
 
@@ -70,11 +112,15 @@ def _respond_node(state: RecipeSearchState) -> dict[str, Any]:
 
 
 _graph = StateGraph(RecipeSearchState)
+_graph.add_node("search_mcp", _search_mcp_node)
 _graph.add_node("search_saved", _search_saved_node)
+_graph.add_node("join_search_results", _join_search_results)
 _graph.add_node("web_search", _web_search_node)
 _graph.add_node("respond", _respond_node)
+_graph.add_edge(START, "search_mcp")
 _graph.add_edge(START, "search_saved")
-_graph.add_conditional_edges("search_saved", _route_after_saved)
+_graph.add_edge(["search_mcp", "search_saved"], "join_search_results")
+_graph.add_conditional_edges("join_search_results", _route_after_search)
 _graph.add_edge("web_search", "respond")
 _graph.add_edge("respond", END)
 recipe_graph = _graph.compile()
