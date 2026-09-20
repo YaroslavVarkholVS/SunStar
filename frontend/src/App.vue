@@ -3,7 +3,17 @@ import { onUnmounted } from 'vue'
 import { useRecipeSearch } from './composables/useRecipeSearch'
 import SaveRecipeForm from './components/SaveRecipeForm.vue'
 
-const { ingredients, recipes, isSearching, errorMessage, searchRecipes, cancelSearch } = useRecipeSearch()
+const {
+  ingredients,
+  recipes,
+  isSearching,
+  isWaitingForApproval,
+  pendingApproval,
+  errorMessage,
+  searchRecipes,
+  resumeRecipe,
+  cancelSearch,
+} = useRecipeSearch()
 
 onUnmounted(cancelSearch)
 </script>
@@ -35,5 +45,33 @@ onUnmounted(cancelSearch)
     </p>
 
     <SaveRecipeForm />
+    <div
+  v-if="isWaitingForApproval && pendingApproval"
+  class="approval-dialog"
+>
+  <h2>Save this recipe?</h2>
+
+  <p>{{ pendingApproval.question }}</p>
+
+  <pre>{{ pendingApproval.recipe }}</pre>
+
+  <div>
+    <button
+      type="button"
+      :disabled="isSearching"
+      @click="resumeRecipe(true)"
+    >
+      Save recipe
+    </button>
+
+    <button
+      type="button"
+      :disabled="isSearching"
+      @click="resumeRecipe(false)"
+    >
+      Don't save
+    </button>
+  </div>
+</div>
   </main>
 </template>
